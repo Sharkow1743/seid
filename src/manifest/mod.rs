@@ -55,7 +55,6 @@ impl Manifest {
         false
     }
 
-    /// Packs the block count and 4-bit capability tags into a `u64`.
     pub fn to_u64(&self) -> u64 {
         let count = self.block_count as usize;
         let mut val = (self.block_count as u64) & 0x0F;
@@ -70,7 +69,6 @@ impl Manifest {
         val
     }
 
-    /// Unpacks a manifest from a native `u64` bitfield.
     pub fn from_u64(val: u64) -> Result<Self, ManifestError> {
         let block_count = (val & 0x0F) as u8;
         if block_count == 0 || block_count > MAX_BLOCKS as u8 {
@@ -93,7 +91,7 @@ impl Manifest {
 
         let total_bits_used = 4 + (count * 4);
         if total_bits_used < 64 && (val >> total_bits_used) != 0 {
-            return Err(ManifestError::TruncatedBitfield);
+            return Err(ManifestError::ExtraneousBits);
         }
 
         Ok(Self { block_count, types })
@@ -102,9 +100,7 @@ impl Manifest {
     pub fn decode(raw: &str) -> Result<Self, ManifestError> {
         let len = raw.len();
         if len < MIN_BLOCK_LEN || len > MAX_BLOCK_LEN {
-            return Err(ManifestError::Base62(
-                crate::error::Base62Error::InvalidChar(0),
-            ));
+            return Err(ManifestError::InvalidLength(len));
         }
 
         let val = base62::decode_u64(raw).map_err(ManifestError::Base62)?;
@@ -112,13 +108,7 @@ impl Manifest {
     }
 
     pub fn encoded_len(&self) -> usize {
-        let val = self.to_u64();
-        let raw_len = base62::encoded_u64_len(val);
-        if raw_len < MIN_BLOCK_LEN {
-            MIN_BLOCK_LEN
-        } else {
-            raw_len
-        }
+        base62::encoded_u64_len(self.to_u64())
     }
 
     pub fn encode_into(&self, dest: &mut [u8]) -> Result<usize, BufferError> {
@@ -129,20 +119,7 @@ impl Manifest {
                 provided: dest.len(),
             });
         }
-
-        let val = self.to_u64();
-        let raw_len = base62::encoded_u64_len(val);
-
-        if raw_len < MIN_BLOCK_LEN {
-            let padding = MIN_BLOCK_LEN - raw_len;
-            for i in 0..padding {
-                dest[i] = b'0';
-            }
-            base62::encode_u64_into(val, &mut dest[padding..])?;
-            Ok(MIN_BLOCK_LEN)
-        } else {
-            base62::encode_u64_into(val, dest)
-        }
+        base62::encode_u64_into(self.to_u64(), dest)
     }
 }
 

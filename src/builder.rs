@@ -1,13 +1,15 @@
-//! Fully block-agnostic identifier builder.
+//! Fully block-agnostic identifier builder with build-time hooks.
 
-use crate::block::{Block, InlineStr, MAX_BLOCK_LEN, MAX_BLOCKS, RawBlock};
+use crate::block::{Block, Hook, InlineStr, MAX_BLOCK_LEN, MAX_BLOCKS, RawBlock};
 use crate::error::BuilderError;
+use crate::manifest::BlockType;
 use crate::seid::Seid;
 
-/// Block-agnostic builder taking any struct implementing [`Block`].
-#[derive(Copy, Clone, Debug)]
+/// Block-agnostic builder supporting self-sealing blocks via stack-allocated hooks.
+#[derive(Copy, Clone)]
 pub struct SeidBuilder {
     blocks: [RawBlock; MAX_BLOCKS],
+    hooks: [Option<Hook>; MAX_BLOCKS],
     count: usize,
 }
 
@@ -17,9 +19,10 @@ impl SeidBuilder {
     #[inline]
     pub const fn new() -> Self {
         Self {
-            blocks: [RawBlock::new(crate::manifest::BlockType::TplText, unsafe {
+            blocks: [RawBlock::new(BlockType::TplText, unsafe {
                 InlineStr::from_raw_parts([0; MAX_BLOCK_LEN], 0)
             }); MAX_BLOCKS],
+            hooks: [None; MAX_BLOCKS],
             count: 0,
         }
     }
@@ -39,7 +42,7 @@ impl SeidBuilder {
         self.count == 0
     }
 
-    /// Appends any type implementing [`Block`].
+    /// Appends any type implementing [`Block`]. Registers build hooks if provided.
     pub fn block<B: Block>(mut self, b: B) -> Result<Self, BuilderError> {
         if self.count >= MAX_BLOCKS {
             return Err(BuilderError::CapacityExceeded(MAX_BLOCKS));
@@ -52,6 +55,7 @@ impl SeidBuilder {
 
         let token = InlineStr::try_new(s)?;
         self.blocks[self.count] = RawBlock::new(B::TYPE, token);
+        self.hooks[self.count] = b.build_hook();
         self.count += 1;
         Ok(self)
     }
@@ -65,11 +69,33 @@ impl SeidBuilder {
         self.block(block_instance)
     }
 
-    /// Seals the blocks into a verified `Seid`.
-    pub fn build(self) -> Result<Seid, BuilderError> {
+    /// Finalizes all self-sealing blocks in dependency order:
+    /// Pass 1 seals cryptographic signatures (`Auth`), and Pass 2 computes error detection (`Parity`).
+    pub fn build(mut self) -> Result<Seid, BuilderError> {
         if self.count == 0 {
             return Err(BuilderError::Empty);
         }
+
+        // Pass 1: Finalize application signatures and content blocks
+        for i in 0..self.count {
+            if self.blocks[i].kind != BlockType::Parity {
+                if let Some(hook) = self.hooks[i] {
+                    let updated_token = (hook.func)(&hook.state, &self.blocks[..self.count], i)?;
+                    self.blocks[i].token = updated_token;
+                }
+            }
+        }
+
+        // Pass 2: Finalize error-detection symbols (Parity) over finalized tokens
+        for i in 0..self.count {
+            if self.blocks[i].kind == BlockType::Parity {
+                if let Some(hook) = self.hooks[i] {
+                    let updated_token = (hook.func)(&hook.state, &self.blocks[..self.count], i)?;
+                    self.blocks[i].token = updated_token;
+                }
+            }
+        }
+
         Ok(Seid::from_raw_parts(self.count as u8, self.blocks))
     }
 }

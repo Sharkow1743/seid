@@ -27,4 +27,6 @@ pub use error::{
     ParseError,
 };
 pub use manifest::Manifest;
-pub use seid::{EncodedSeid, Id, MAX_ENCODED_LEN, Seid};
+pub use seid::{
+    CANONICAL_DELIMITER, DELIMITER, EncodedSeid, Id, MAX_ENCODED_LEN, Seid, URL_DELIMITER,
+};

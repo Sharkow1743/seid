@@ -1,21 +1,37 @@
-//! Explicit zero-copy parser for `Seid`.
+//! Explicit zero-copy parser for `Seid` supporting both canonical '::' and URL-safe '.' delimiters.
 
 use crate::block::{InlineStr, MAX_BLOCK_LEN, MAX_BLOCKS, MIN_BLOCK_LEN, RawBlock};
 use crate::error::{BlockError, ParseError};
 use crate::manifest::Manifest;
-use crate::seid::{DELIMITER, Seid};
+use crate::seid::{CANONICAL_DELIMITER, Seid, URL_DELIMITER};
 
 pub fn parse(input: &str) -> Result<Seid, ParseError> {
     if input.is_empty() {
         return Err(ParseError::EmptyInput);
     }
 
+    let has_canonical = input.contains(CANONICAL_DELIMITER);
+    let has_url = input.contains(URL_DELIMITER);
+
+    // Reject ambiguous mixed delimiters
+    if has_canonical && has_url {
+        return Err(ParseError::MalformedDelimiter);
+    }
+
+    let delim = if has_canonical {
+        CANONICAL_DELIMITER
+    } else if has_url {
+        URL_DELIMITER
+    } else {
+        return Err(ParseError::MalformedDelimiter);
+    };
+
     let mut tokens: [&str; MAX_BLOCKS + 1] = [""; MAX_BLOCKS + 1];
     let mut token_count = 0;
 
     let mut start = 0;
     let bytes = input.as_bytes();
-    let delim_bytes = DELIMITER.as_bytes();
+    let delim_bytes = delim.as_bytes();
     let len = bytes.len();
 
     let mut i = 0;

@@ -27,7 +27,7 @@ pub enum BlockError {
     InvalidLength(usize),
     #[error("invalid ASCII Base62 byte in block: {0:#04x}")]
     InvalidBase62Char(u8),
-    #[error("block binary payload too large: {0} bytes (max is 6 bytes)")]
+    #[error("block binary payload too large: {0} bytes (max is 6 bytes / 218T numerical limit)")]
     PayloadTooLarge(usize),
     #[error("block type mismatch: expected {expected}, actual {actual}")]
     TypeMismatch {
@@ -44,8 +44,10 @@ pub enum BlockError {
 pub enum ManifestError {
     #[error("invalid block count in manifest: {declared} (maximum supported is {max})")]
     InvalidBlockCount { declared: u8, max: u8 },
-    #[error("manifest bitstream truncated: insufficient bits to decode block types")]
-    TruncatedBitfield,
+    #[error("invalid manifest character length: {0}")]
+    InvalidLength(usize),
+    #[error("manifest bitstream contains extraneous unconsumed bits")]
+    ExtraneousBits,
     #[error(transparent)]
     Base62(#[from] Base62Error),
     #[error(transparent)]
@@ -97,6 +99,8 @@ pub enum CryptoError {
     NoAuthBlock,
     #[error("identifier does not contain any cipher blocks")]
     NoCipherBlock,
+    #[error("auth block at index {0} is unsigned")]
+    UnsignedAuthBlock(usize),
     #[error("cryptographic authentication failed: signature mismatch or corrupted data")]
     InvalidSignature,
     #[error("invalid key length: expected {expected} bytes, provided {provided}")]

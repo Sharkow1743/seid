@@ -1,12 +1,12 @@
 //! Chronological timestamp block operations.
 
 use crate::base62::{self, MAX_U64_BASE62_VAL};
-use crate::block::{Block, BlockType};
-use crate::error::{BlockError, BufferError};
+use crate::block::{Block, BlockType, MAX_BLOCK_LEN};
+use crate::error::{Base62Error, BlockError, BufferError};
 
 pub const DEFAULT_CUSTOM_EPOCH_MS: u64 = 1_704_067_200_000;
 
-/// Type 2: Sortable timestamp integer block.
+/// Type 2: Sortable timestamp integer block (padded to 8 characters for strictly monotonic sorting).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Time(pub u64);
 
@@ -14,7 +14,7 @@ impl Time {
     #[inline]
     pub fn new(timestamp: u64) -> Result<Self, BlockError> {
         if timestamp > MAX_U64_BASE62_VAL {
-            return Err(BlockError::InvalidLength(timestamp as usize));
+            return Err(BlockError::Base62(Base62Error::Overflow));
         }
         Ok(Self(timestamp))
     }
@@ -24,12 +24,12 @@ impl Time {
         self.0
     }
 
-    #[cfg(feature = "sys-clock")]
+    #[cfg(all(feature = "sys-clock", feature = "std"))]
     pub fn now() -> Result<Self, BlockError> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| BlockError::InvalidLength(0))?
+            .map_err(|_| BlockError::Base62(Base62Error::Overflow))?
             .as_millis() as u64;
 
         let delta = now_ms.saturating_sub(DEFAULT_CUSTOM_EPOCH_MS);
@@ -42,7 +42,7 @@ impl Block for Time {
 
     #[inline]
     fn encode(&self, dest: &mut [u8]) -> Result<usize, BufferError> {
-        base62::encode_u64_into(self.0, dest)
+        base62::encode_u64_fixed_into(self.0, MAX_BLOCK_LEN, dest)
     }
 
     #[inline]

@@ -1,11 +1,13 @@
-//! Core identifier representation and stack string output.
+//! Core identifier representation, stack string output, and multi-format encoding.
 
 use core::cmp::Ordering;
 use core::fmt;
 use core::ops::Index;
 use core::str;
 
-use crate::block::{Auth, Block, BlockType, MAX_BLOCKS, Parity, RawBlock, Time};
+use crate::block::{
+    Auth, Block, BlockType, InlineStr, MAX_BLOCK_LEN, MAX_BLOCKS, Parity, RawBlock, Time,
+};
 use crate::error::{BufferError, CryptoError, ExtractError, ParityError, ParseError};
 use crate::manifest::Manifest;
 
@@ -13,9 +15,9 @@ use crate::manifest::Manifest;
 use alloc::string::String;
 
 pub const DELIMITER: &str = "::";
+pub const CANONICAL_DELIMITER: &str = "::";
+pub const URL_DELIMITER: &str = ".";
 
-/// Maximum length in bytes of any serialized canonical SEID string:
-/// 8 functional blocks * 8 chars + 8 delimiters * 2 chars + 1 manifest block * 8 chars = 88 bytes.
 pub const MAX_ENCODED_LEN: usize = 88;
 
 /// Fixed-size stack-allocated canonical ASCII string representation of a `Seid`.
@@ -137,16 +139,11 @@ impl Seid {
         Manifest::new(self.block_count, types)
     }
 
-    // =========================================================================
-    // Inspection & Query Ergonomics
-    // =========================================================================
-
     #[inline]
     pub fn contains_type(&self, kind: BlockType) -> bool {
         self.manifest().contains(kind)
     }
 
-    /// Verifies that the identifier blocks exactly match an expected schema array.
     pub fn matches_schema(&self, schema: &[BlockType]) -> bool {
         let blocks = self.blocks();
         if blocks.len() != schema.len() {
@@ -160,7 +157,6 @@ impl Seid {
         true
     }
 
-    /// Decodes the block at `index` into typed struct `B`.
     #[inline]
     pub fn get_as<B: Block>(&self, index: usize) -> Result<B, ExtractError> {
         let block = self
@@ -171,7 +167,6 @@ impl Seid {
             .map_err(|e| ExtractError::Block { index, source: e })
     }
 
-    /// Finds and decodes the first block of type `B::TYPE`.
     pub fn first_of<B: Block>(&self) -> Result<Option<B>, ExtractError> {
         for (i, block) in self.blocks().iter().enumerate() {
             if block.kind() == B::TYPE {
@@ -218,10 +213,6 @@ impl Seid {
         })
     }
 
-    // =========================================================================
-    // Compile-Time Typed Unpacking
-    // =========================================================================
-
     #[inline]
     pub fn unpack<'a, T: crate::block::Unpack<'a>>(&'a self) -> Result<T, ExtractError> {
         T::unpack(self.blocks())
@@ -233,36 +224,106 @@ impl Seid {
 
     pub fn check_parity(&self) -> Result<bool, ParityError> {
         let blocks = self.blocks();
-        let parity_pos = blocks.iter().position(|b| b.kind() == BlockType::Parity);
+        let mut found = false;
+        let mut ok = true;
+        let mut symbol_idx = 0;
 
-        match parity_pos {
-            Some(idx) => {
-                let p: Parity = blocks[idx]
+        for block in blocks {
+            if block.kind == BlockType::Parity {
+                found = true;
+                let p: Parity = block
                     .decode()
                     .map_err(|_| ParityError::UncorrectableError)?;
-                Ok(p.verify(&blocks[..idx]))
+                if !p.verify_symbol(blocks, symbol_idx) {
+                    ok = false;
+                }
+                symbol_idx += 1;
             }
-            None => Err(ParityError::NoParityBlock),
+        }
+
+        if found {
+            Ok(ok)
+        } else {
+            Err(ParityError::NoParityBlock)
         }
     }
 
+    /// Verifies the first Auth block in the identifier.
     pub fn verify_signature(&self, key: &[u8; 32]) -> Result<bool, CryptoError> {
         let blocks = self.blocks();
         let auth_pos = blocks.iter().position(|b| b.kind() == BlockType::Auth);
 
         match auth_pos {
-            Some(idx) => {
-                let a: Auth = blocks[idx].decode()?;
-                Ok(a.verify(&blocks[..idx], key))
-            }
+            Some(idx) => self.verify_signature_at(idx, key),
             None => Err(CryptoError::NoAuthBlock),
         }
+    }
+
+    /// Verifies envelope authentication for the Auth block at `auth_idx`.
+    pub fn verify_signature_at(
+        &self,
+        auth_idx: usize,
+        key: &[u8; 32],
+    ) -> Result<bool, CryptoError> {
+        let blocks = self.blocks();
+        if auth_idx >= blocks.len() || blocks[auth_idx].kind() != BlockType::Auth {
+            return Err(CryptoError::NoAuthBlock);
+        }
+
+        let a: Auth = blocks[auth_idx].decode()?;
+        if !a.is_signed {
+            return Err(CryptoError::UnsignedAuthBlock(auth_idx));
+        }
+
+        crate::block::crypto::verify_blake3_envelope_auth(blocks, a.as_bytes(), key, auth_idx)
+    }
+
+    /// Signs an unsigned Auth block at `auth_idx` in place, returning a signed `Seid`.
+    pub fn sign_at(&self, auth_idx: usize, key: &[u8; 32]) -> Result<Self, CryptoError> {
+        let mut new_blocks = self.blocks;
+        let count = self.block_count as usize;
+
+        if auth_idx >= count || new_blocks[auth_idx].kind() != BlockType::Auth {
+            return Err(CryptoError::NoAuthBlock);
+        }
+
+        let signed_auth = crate::block::crypto::create_blake3_envelope_auth(
+            &new_blocks[..count],
+            key,
+            auth_idx,
+            crate::block::crypto::DEFAULT_AUTH_TAG_LEN,
+        )?;
+
+        let mut buf = [0u8; MAX_BLOCK_LEN];
+        let written = signed_auth.encode(&mut buf)?;
+        let s = core::str::from_utf8(&buf[..written])
+            .map_err(|_| CryptoError::Block(crate::error::BlockError::InvalidBase62Char(0)))?;
+        let token = InlineStr::try_new(s)?;
+
+        new_blocks[auth_idx] = RawBlock::new(BlockType::Auth, token);
+        Ok(Self::from_raw_parts(self.block_count, new_blocks))
+    }
+
+    pub fn is_fully_signed(&self) -> bool {
+        for block in self.blocks() {
+            if block.kind == BlockType::Auth {
+                if let Ok(a) = block.decode::<Auth>() {
+                    if !a.is_signed {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub fn decrypt(&self, key: &[u8; 32], out: &mut [u8]) -> Result<usize, CryptoError> {
         crate::block::crypto::decrypt_blocks(self.blocks(), key, out)
     }
 
+    /// Returns the primary timestamp:
+    /// - If 1 Time block: delta milliseconds since epoch.
+    /// - If 2 Time blocks: coarse seconds * 1,000,000,000 + fine nanoseconds.
     pub fn timestamp(&self) -> Option<u64> {
         let mut time_iter = self.blocks().iter().filter_map(|b| {
             if b.kind() == BlockType::Time {
@@ -294,18 +355,30 @@ impl Seid {
     }
 
     pub fn encoded_len(&self) -> usize {
+        self.encoded_len_with_delim(CANONICAL_DELIMITER)
+    }
+
+    pub fn encoded_len_with_delim(&self, delim: &str) -> usize {
         let count = self.block_count as usize;
         let mut len = 0;
         for block in &self.blocks[..count] {
             len += block.encoded_len();
         }
-        len += count * DELIMITER.len();
+        len += count * delim.len();
         len += self.manifest().encoded_len();
         len
     }
 
     pub fn encode_to_slice<'a>(&self, dest: &'a mut [u8]) -> Result<&'a str, BufferError> {
-        let required = self.encoded_len();
+        self.encode_to_slice_with_delim(dest, CANONICAL_DELIMITER)
+    }
+
+    pub fn encode_to_slice_with_delim<'a>(
+        &self,
+        dest: &'a mut [u8],
+        delim: &str,
+    ) -> Result<&'a str, BufferError> {
+        let required = self.encoded_len_with_delim(delim);
         if dest.len() < required {
             return Err(BufferError::TooSmall {
                 required,
@@ -315,13 +388,13 @@ impl Seid {
 
         let mut cursor = 0;
         let count = self.block_count as usize;
+        let delim_bytes = delim.as_bytes();
 
         for block in &self.blocks[..count] {
             let written = block.encode_into(&mut dest[cursor..])?;
             cursor += written;
-            dest[cursor] = b':';
-            dest[cursor + 1] = b':';
-            cursor += 2;
+            dest[cursor..cursor + delim_bytes.len()].copy_from_slice(delim_bytes);
+            cursor += delim_bytes.len();
         }
 
         let manifest = self.manifest();
@@ -330,10 +403,22 @@ impl Seid {
         Ok(unsafe { str::from_utf8_unchecked(&dest[..cursor]) })
     }
 
-    /// Serializes the identifier into a zero-allocation stack string buffer.
     pub fn to_encoded(&self) -> EncodedSeid {
         let mut buf = [0u8; MAX_ENCODED_LEN];
         let len = self.encode_to_slice(&mut buf).unwrap().len();
+        EncodedSeid {
+            buf,
+            len: len as u8,
+        }
+    }
+
+    /// Formats the identifier as a URL-safe string using '.' as delimiter.
+    pub fn to_url_encoded(&self) -> EncodedSeid {
+        let mut buf = [0u8; MAX_ENCODED_LEN];
+        let len = self
+            .encode_to_slice_with_delim(&mut buf, URL_DELIMITER)
+            .unwrap()
+            .len();
         EncodedSeid {
             buf,
             len: len as u8,
@@ -356,9 +441,17 @@ impl PartialOrd for Seid {
     }
 }
 
+/// Zero-allocation O(N) token-by-token comparison.
 impl Ord for Seid {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.to_encoded().cmp(&other.to_encoded())
+        let count = self.block_count.min(other.block_count) as usize;
+        for i in 0..count {
+            match self.blocks[i].token.cmp(&other.blocks[i].token) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+        self.block_count.cmp(&other.block_count)
     }
 }
 
@@ -397,7 +490,7 @@ impl fmt::Display for Seid {
         let count = self.block_count as usize;
         for i in 0..count {
             self.blocks[i].fmt(f)?;
-            f.write_str(DELIMITER)?;
+            f.write_str(CANONICAL_DELIMITER)?;
         }
         self.manifest().fmt(f)
     }

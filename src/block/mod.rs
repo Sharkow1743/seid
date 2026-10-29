@@ -6,7 +6,7 @@ use core::fmt;
 use core::str;
 
 use crate::base62;
-use crate::error::{BlockError, BufferError};
+use crate::error::{BlockError, BufferError, BuilderError};
 
 pub use crate::manifest::{
     BlockType, ESCAPE_TAG, MAX_BLOCK_BYTES, MAX_BLOCK_LEN, MAX_BLOCKS, MIN_BLOCK_LEN,
@@ -28,6 +28,17 @@ pub use rand::Rand;
 pub use text::{Inst, Tpl};
 pub use time::Time;
 
+/// Static function pointer signature for build-time finalization hooks.
+pub type FinalizeFn =
+    fn(state: &[u8; 32], blocks: &[RawBlock], my_idx: usize) -> Result<InlineStr, BuilderError>;
+
+/// Zero-allocation, stack-only build hook container.
+#[derive(Copy, Clone)]
+pub struct Hook {
+    pub func: FinalizeFn,
+    pub state: [u8; 32],
+}
+
 /// Core trait implemented by all standard and custom block structs.
 pub trait Block: Sized {
     /// The unique capability tag of this block.
@@ -38,6 +49,12 @@ pub trait Block: Sized {
 
     /// Decodes this block from a Base62 string token.
     fn decode(raw: &str) -> Result<Self, BlockError>;
+
+    /// Optional build hook for self-sealing blocks (e.g. `Auth`, `Parity`).
+    /// Invoked during `SeidBuilder::build()` across all assembled blocks.
+    fn build_hook(&self) -> Option<Hook> {
+        None
+    }
 }
 
 /// Stack-allocated fixed 8-byte ASCII string for text and token blocks.
@@ -241,7 +258,6 @@ impl RawBlock {
         Ok(len)
     }
 
-    /// Decodes this raw block into a specific typed block struct.
     pub fn decode<B: Block>(&self) -> Result<B, BlockError> {
         if self.kind != B::TYPE {
             return Err(BlockError::TypeMismatch {

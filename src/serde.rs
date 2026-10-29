@@ -1,4 +1,4 @@
-//! Serde serialization and deserialization implementations.
+//! Serde serialization and deserialization implementations for both human-readable and binary formats.
 
 use core::fmt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -31,7 +31,7 @@ impl<'de> Deserialize<'de> for Seid {
             type Value = Seid;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a valid Base62 Seid identifier string")
+                formatter.write_str("a valid Base62 Seid identifier string or byte sequence")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -40,9 +40,28 @@ impl<'de> Deserialize<'de> for Seid {
             {
                 Seid::parse(value).map_err(de::Error::custom)
             }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let s = core::str::from_utf8(v).map_err(de::Error::custom)?;
+                Seid::parse(s).map_err(de::Error::custom)
+            }
+
+            fn visit_byte_buf<E>(self, v: alloc::vec::Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_bytes(&v)
+            }
         }
 
-        deserializer.deserialize_str(SeidVisitor)
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(SeidVisitor)
+        } else {
+            deserializer.deserialize_bytes(SeidVisitor)
+        }
     }
 }
 

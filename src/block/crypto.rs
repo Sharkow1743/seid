@@ -1,55 +1,58 @@
 //! Cryptographic signature authentication and stream cipher payload operations using BLAKE3.
 
 use crate::base62;
-use crate::block::{Block, BlockType, MAX_BLOCK_BYTES, RawBlock};
-use crate::error::{BlockError, BufferError, CryptoError};
+use crate::block::{Block, BlockType, Hook, InlineStr, MAX_BLOCK_BYTES, MAX_BLOCK_LEN, RawBlock};
+use crate::error::{BlockError, BufferError, BuilderError, CryptoError};
 
-pub fn verify_blake3_auth(
-    blocks: &[RawBlock],
-    tag: &[u8],
-    key: &[u8; 32],
-) -> Result<bool, CryptoError> {
-    let mut hasher = blake3::Hasher::new_keyed(key);
+/// Default authenticating MAC tag length in bytes (fits cleanly within 8 Base62 chars).
+pub const DEFAULT_AUTH_TAG_LEN: usize = 5;
 
-    for block in blocks {
-        if block.kind == BlockType::Auth {
-            break;
-        }
-        hasher.update(block.as_bytes());
-        hasher.update(b"::");
+/// Constant-time slice comparison in pure no_std without external dependencies.
+#[inline(never)]
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
     }
-
-    let mut output = [0u8; 32];
-    let mut xof = hasher.finalize_xof();
-    xof.fill(&mut output);
-
-    let expected = &output[..tag.len()];
-
-    #[cfg(feature = "subtle")]
-    {
-        use subtle::ConstantTimeEq;
-        Ok(tag.ct_eq(expected).into())
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
     }
-
-    #[cfg(not(feature = "subtle"))]
-    {
-        Ok(tag == expected)
-    }
+    diff == 0
 }
 
-pub fn create_blake3_auth(
+/// Hook function executed during `SeidBuilder::build()` for `Auth::with_key`.
+fn auth_finalize_hook(
+    state: &[u8; 32],
+    blocks: &[RawBlock],
+    my_idx: usize,
+) -> Result<InlineStr, BuilderError> {
+    let auth = create_blake3_envelope_auth(blocks, state, my_idx, DEFAULT_AUTH_TAG_LEN)?;
+    let mut buf = [0u8; MAX_BLOCK_LEN];
+    let written = auth.encode(&mut buf)?;
+    let s = core::str::from_utf8(&buf[..written])
+        .map_err(|_| BuilderError::Block(BlockError::InvalidBase62Char(0)))?;
+    InlineStr::try_new(s).map_err(BuilderError::Block)
+}
+
+/// Computes BLAKE3 envelope authentication over all other functional payload blocks.
+/// Skips the auth block itself and any Parity blocks.
+pub fn create_blake3_envelope_auth(
     blocks: &[RawBlock],
     key: &[u8; 32],
+    auth_index: usize,
     tag_len: usize,
 ) -> Result<Auth, CryptoError> {
     let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(b"seid::envelope::auth::v2");
+    hasher.update(&(auth_index as u64).to_le_bytes());
 
-    for block in blocks {
-        if block.kind == BlockType::Auth {
-            break;
+    for (i, block) in blocks.iter().enumerate() {
+        if block.kind != BlockType::Auth && block.kind != BlockType::Parity {
+            hasher.update(&(i as u64).to_le_bytes());
+            hasher.update(&[block.kind.as_u8()]);
+            hasher.update(block.as_bytes());
+            hasher.update(b"::");
         }
-        hasher.update(block.as_bytes());
-        hasher.update(b"::");
     }
 
     let clamped = tag_len.min(MAX_BLOCK_BYTES);
@@ -63,9 +66,56 @@ pub fn create_blake3_auth(
     Ok(Auth {
         bytes,
         len: clamped as u8,
+        is_signed: true,
+        key: None,
     })
 }
 
+/// Verifies BLAKE3 envelope authentication over all other functional payload blocks.
+pub fn verify_blake3_envelope_auth(
+    blocks: &[RawBlock],
+    tag: &[u8],
+    key: &[u8; 32],
+    auth_index: usize,
+) -> Result<bool, CryptoError> {
+    let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(b"seid::envelope::auth::v2");
+    hasher.update(&(auth_index as u64).to_le_bytes());
+
+    for (i, block) in blocks.iter().enumerate() {
+        if block.kind != BlockType::Auth && block.kind != BlockType::Parity {
+            hasher.update(&(i as u64).to_le_bytes());
+            hasher.update(&[block.kind.as_u8()]);
+            hasher.update(block.as_bytes());
+            hasher.update(b"::");
+        }
+    }
+
+    let mut output = [0u8; 32];
+    let mut xof = hasher.finalize_xof();
+    xof.fill(&mut output);
+
+    let expected = &output[..tag.len()];
+    Ok(constant_time_eq(tag, expected))
+}
+
+pub fn create_blake3_auth(
+    preceding_blocks: &[RawBlock],
+    key: &[u8; 32],
+    tag_len: usize,
+) -> Result<Auth, CryptoError> {
+    create_blake3_envelope_auth(preceding_blocks, key, preceding_blocks.len(), tag_len)
+}
+
+pub fn verify_blake3_auth(
+    preceding_blocks: &[RawBlock],
+    tag: &[u8],
+    key: &[u8; 32],
+) -> Result<bool, CryptoError> {
+    verify_blake3_envelope_auth(preceding_blocks, tag, key, preceding_blocks.len())
+}
+
+/// Decrypts all sequential cipher blocks using nonced, indexed stream keystreams.
 pub fn decrypt_blocks(
     blocks: &[RawBlock],
     key: &[u8; 32],
@@ -90,16 +140,19 @@ pub fn decrypt_blocks(
         }));
     }
 
-    let mut hasher = blake3::Hasher::new_keyed(key);
-    hasher.update(b"seid::cipher::keystream");
-
-    let mut xof = hasher.finalize_xof();
     let mut cursor = 0;
+    let mut chunk_index: usize = 0;
 
     for block in blocks {
         if block.kind == BlockType::Cipher {
             let c: Cipher = block.decode()?;
             let chunk_len = c.len as usize;
+
+            let mut hasher = blake3::Hasher::new_keyed(key);
+            hasher.update(b"seid::cipher::keystream::v2");
+            hasher.update(&(chunk_index as u64).to_le_bytes());
+
+            let mut xof = hasher.finalize_xof();
             let mut keystream = [0u8; MAX_BLOCK_BYTES];
             xof.fill(&mut keystream[..chunk_len]);
 
@@ -107,6 +160,7 @@ pub fn decrypt_blocks(
                 out[cursor + i] = c.bytes[i] ^ keystream[i];
             }
             cursor += chunk_len;
+            chunk_index += 1;
         }
     }
 
@@ -118,12 +172,37 @@ pub fn decrypt_blocks(
 pub struct Auth {
     pub bytes: [u8; MAX_BLOCK_BYTES],
     pub len: u8,
+    pub is_signed: bool,
+    pub key: Option<[u8; 32]>,
 }
 
 impl Auth {
+    /// Creates an unsealed, unsigned Auth block slot to be signed later.
+    #[inline]
+    pub fn unsigned() -> Self {
+        Self {
+            bytes: [0u8; MAX_BLOCK_BYTES],
+            len: DEFAULT_AUTH_TAG_LEN as u8,
+            is_signed: false,
+            key: None,
+        }
+    }
+
+    /// Creates an Auth block with a signing key that automatically signs the full identifier
+    /// envelope during `SeidBuilder::build()`. Can be placed at ANY block index.
+    #[inline]
+    pub fn with_key(key: [u8; 32]) -> Self {
+        Self {
+            bytes: [0u8; MAX_BLOCK_BYTES],
+            len: DEFAULT_AUTH_TAG_LEN as u8,
+            is_signed: false,
+            key: Some(key),
+        }
+    }
+
     #[inline]
     pub fn sign(preceding_blocks: &[RawBlock], key: &[u8; 32]) -> Self {
-        create_blake3_auth(preceding_blocks, key, MAX_BLOCK_BYTES).unwrap()
+        create_blake3_auth(preceding_blocks, key, DEFAULT_AUTH_TAG_LEN).unwrap()
     }
 
     #[inline]
@@ -137,6 +216,9 @@ impl Auth {
 
     #[inline]
     pub fn verify(&self, preceding_blocks: &[RawBlock], key: &[u8; 32]) -> bool {
+        if !self.is_signed {
+            return false;
+        }
         verify_blake3_auth(preceding_blocks, self.as_bytes(), key).unwrap_or(false)
     }
 
@@ -158,9 +240,20 @@ impl Block for Auth {
     fn decode(raw: &str) -> Result<Self, BlockError> {
         let mut bytes = [0u8; MAX_BLOCK_BYTES];
         let len = base62::decode_bytes_into(raw, &mut bytes)?;
+        let is_signed = bytes[..len].iter().any(|&b| b != 0);
         Ok(Self {
             bytes,
             len: len as u8,
+            is_signed,
+            key: None,
+        })
+    }
+
+    #[inline]
+    fn build_hook(&self) -> Option<Hook> {
+        self.key.map(|k| Hook {
+            func: auth_finalize_hook,
+            state: k,
         })
     }
 }
@@ -174,6 +267,14 @@ pub struct Cipher {
 
 impl Cipher {
     pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> Result<Self, CryptoError> {
+        Self::encrypt_chunk(plaintext, key, 0)
+    }
+
+    pub fn encrypt_chunk(
+        plaintext: &[u8],
+        key: &[u8; 32],
+        chunk_index: usize,
+    ) -> Result<Self, CryptoError> {
         if plaintext.is_empty() || plaintext.len() > MAX_BLOCK_BYTES {
             return Err(CryptoError::Block(BlockError::PayloadTooLarge(
                 plaintext.len(),
@@ -181,7 +282,9 @@ impl Cipher {
         }
 
         let mut hasher = blake3::Hasher::new_keyed(key);
-        hasher.update(b"seid::cipher::keystream");
+        hasher.update(b"seid::cipher::keystream::v2");
+        hasher.update(&(chunk_index as u64).to_le_bytes());
+
         let mut xof = hasher.finalize_xof();
         let mut keystream = [0u8; MAX_BLOCK_BYTES];
         xof.fill(&mut keystream[..plaintext.len()]);
@@ -189,6 +292,16 @@ impl Cipher {
         let mut bytes = [0u8; MAX_BLOCK_BYTES];
         for i in 0..plaintext.len() {
             bytes[i] = plaintext[i] ^ keystream[i];
+        }
+
+        let mut val: u64 = 0;
+        for &b in &bytes[..plaintext.len()] {
+            val = (val << 8) | (b as u64);
+        }
+        if val > base62::MAX_U64_BASE62_VAL {
+            return Err(CryptoError::Block(BlockError::PayloadTooLarge(
+                plaintext.len(),
+            )));
         }
 
         Ok(Self {

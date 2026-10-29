@@ -4,11 +4,32 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::base62::{self, MAX_U64_BASE62_VAL};
 use crate::block::{Block, BlockType};
-use crate::error::{BlockError, BufferError};
+use crate::error::{Base62Error, BlockError, BufferError};
 
-static SEED_COUNTER: AtomicU64 = AtomicU64::new(0x517c_c1b7_2722_0a95);
+static SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Type 1: Random entropy block (up to 48 bits per block).
+#[inline]
+fn init_entropy() -> u64 {
+    let ptr_entropy = (&SEED_COUNTER as *const AtomicU64 as usize) as u64;
+    let local = 0u64;
+    let stack_entropy = (&local as *const u64 as usize) as u64;
+
+    #[cfg(feature = "std")]
+    let time_entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    #[cfg(not(feature = "std"))]
+    let time_entropy = 0x517c_c1b7_2722_0a95;
+
+    ptr_entropy
+        ^ stack_entropy.rotate_left(21)
+        ^ time_entropy.rotate_left(42)
+        ^ 0x9e37_79b9_7f4a_7c15
+}
+
+/// Type 1: Random entropy block (up to 47.6 bits per block).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Rand(pub u64);
 
@@ -16,7 +37,7 @@ impl Rand {
     #[inline]
     pub fn new(val: u64) -> Result<Self, BlockError> {
         if val > MAX_U64_BASE62_VAL {
-            return Err(BlockError::InvalidLength(val as usize));
+            return Err(BlockError::Base62(Base62Error::Overflow));
         }
         Ok(Self(val))
     }
@@ -27,8 +48,17 @@ impl Rand {
     }
 
     pub fn fast() -> Self {
-        let seed = SEED_COUNTER.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
-        Self::from_seed(seed)
+        let current = SEED_COUNTER.load(Ordering::Relaxed);
+        if current == 0 {
+            let _ = SEED_COUNTER.compare_exchange(
+                0,
+                init_entropy(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+        let step = SEED_COUNTER.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+        Self::from_seed(step ^ 0xbf58_476d_1ce4_e5b9)
     }
 
     pub fn from_seed(seed: u64) -> Self {
@@ -40,9 +70,13 @@ impl Rand {
     #[cfg(feature = "sys-rand")]
     pub fn sys() -> Result<Self, getrandom::Error> {
         let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf)?;
-        let val = u64::from_be_bytes(buf) % (MAX_U64_BASE62_VAL + 1);
-        Ok(Self(val))
+        loop {
+            getrandom::fill(&mut buf)?;
+            let raw = u64::from_be_bytes(buf) & 0x0000_FFFF_FFFF_FFFF;
+            if raw <= MAX_U64_BASE62_VAL {
+                return Ok(Self(raw));
+            }
+        }
     }
 }
 

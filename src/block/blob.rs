@@ -4,7 +4,7 @@ use crate::base62;
 use crate::block::{Block, BlockType, MAX_BLOCK_BYTES};
 use crate::error::{BlockError, BufferError};
 
-/// Type 5: Raw arbitrary binary payload block (up to 6 bytes).
+/// Type 5: Raw arbitrary binary payload block (up to 6 bytes within numerical bounds).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Blob {
     pub bytes: [u8; MAX_BLOCK_BYTES],
@@ -16,6 +16,15 @@ impl Blob {
         if slice.is_empty() || slice.len() > MAX_BLOCK_BYTES {
             return Err(BlockError::PayloadTooLarge(slice.len()));
         }
+
+        let mut val: u64 = 0;
+        for &b in slice {
+            val = (val << 8) | (b as u64);
+        }
+        if val > base62::MAX_U64_BASE62_VAL {
+            return Err(BlockError::PayloadTooLarge(slice.len()));
+        }
+
         let mut bytes = [0u8; MAX_BLOCK_BYTES];
         bytes[..slice.len()].copy_from_slice(slice);
         Ok(Self {
