@@ -19,8 +19,29 @@ pub fn parse(input: &str) -> Result<Seid, ParseError> {
     }
 
     let delim = if has_canonical {
+        // Enforce clean canonical delimiter structure
+        if input.starts_with(':') || input.ends_with(':') || input.contains(":::") {
+            return Err(ParseError::MalformedDelimiter);
+        }
+        let mut colons = 0;
+        for &b in input.as_bytes() {
+            if b == b':' {
+                colons += 1;
+            } else if colons > 0 {
+                if colons != 2 {
+                    return Err(ParseError::MalformedDelimiter);
+                }
+                colons = 0;
+            }
+        }
+        if colons != 0 && colons != 2 {
+            return Err(ParseError::MalformedDelimiter);
+        }
         CANONICAL_DELIMITER
     } else if has_url {
+        if input.starts_with('.') || input.ends_with('.') || input.contains("..") {
+            return Err(ParseError::MalformedDelimiter);
+        }
         URL_DELIMITER
     } else {
         return Err(ParseError::MalformedDelimiter);
@@ -85,9 +106,10 @@ pub fn parse(input: &str) -> Result<Seid, ParseError> {
         });
     }
 
-    let mut blocks = [RawBlock::new(crate::manifest::BlockType::TplText, unsafe {
-        InlineStr::from_raw_parts([0; MAX_BLOCK_LEN], 0)
-    }); MAX_BLOCKS];
+    let valid_placeholder =
+        unsafe { InlineStr::from_raw_parts([b'0'; MAX_BLOCK_LEN], MIN_BLOCK_LEN as u8) };
+    let mut blocks =
+        [RawBlock::new(crate::manifest::BlockType::TplText, valid_placeholder); MAX_BLOCKS];
 
     for idx in 0..functional_count {
         let token = tokens[idx];

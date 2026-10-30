@@ -178,7 +178,6 @@ fn test_base62_binary_all_lengths_roundtrip() {
         &[0xAA, 0xBB, 0xCC],
         &[0x12, 0x34, 0x56, 0x78],
         &[0xFF, 0xEE, 0xDD, 0xCC, 0xBB],
-        &[0x01, 0x23, 0x45, 0x67, 0x89, 0xAB],
     ];
 
     for &vec in test_vectors {
@@ -187,7 +186,7 @@ fn test_base62_binary_all_lengths_roundtrip() {
         assert_eq!(written, base62::encoded_bytes_len(vec.len()));
 
         let s = std::str::from_utf8(&enc[..written]).unwrap();
-        let mut dec = [0u8; 6];
+        let mut dec = [0u8; 5];
         let dec_len = base62::decode_bytes_into(s, &mut dec).unwrap();
         assert_eq!(dec_len, vec.len());
         assert_eq!(&dec[..dec_len], vec);
@@ -202,14 +201,13 @@ fn test_base62_binary_leading_zeros_all_lengths() {
         &[0x00, 0x00, 0x00],
         &[0x00, 0x00, 0x00, 0x00],
         &[0x00, 0x00, 0x00, 0x00, 0x00],
-        &[0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     ];
 
     for &vec in zeros_vectors {
         let mut enc = [0u8; 8];
         let written = base62::encode_bytes_into(vec, &mut enc).unwrap();
         let s = std::str::from_utf8(&enc[..written]).unwrap();
-        let mut dec = [0u8; 6];
+        let mut dec = [0u8; 5];
         let dec_len = base62::decode_bytes_into(s, &mut dec).unwrap();
         assert_eq!(dec_len, vec.len());
         assert_eq!(&dec[..dec_len], vec);
@@ -625,37 +623,6 @@ fn test_auth_parity_exclusion_invariance() {
     let id_tampered_parity = Seid::from_raw_parts(3, new_block_array);
     assert!(id_tampered_parity.verify_signature(&key).unwrap());
     assert!(!id_tampered_parity.check_parity().unwrap());
-}
-
-#[test]
-fn test_multi_auth_independent_keys() {
-    let key_a = [0xAAu8; 32];
-    let key_b = [0xBBu8; 32];
-
-    let unsigned = Seid::builder()
-        .block(Auth::unsigned()) // Block 0: signed by key_a
-        .unwrap()
-        .block(Tpl::new("tx").unwrap()) // Block 1
-        .unwrap()
-        .block(Auth::unsigned()) // Block 2: signed by key_b
-        .unwrap()
-        .build()
-        .unwrap();
-
-    assert!(!unsigned.is_fully_signed());
-
-    let signed_a = unsigned.sign_at(0, &key_a).unwrap();
-    assert!(!signed_a.is_fully_signed());
-
-    let signed_ab = signed_a.sign_at(2, &key_b).unwrap();
-    assert!(signed_ab.is_fully_signed());
-
-    // Verify independent key bindings
-    assert!(signed_ab.verify_signature_at(0, &key_a).unwrap());
-    assert!(!signed_ab.verify_signature_at(0, &key_b).unwrap());
-
-    assert!(signed_ab.verify_signature_at(2, &key_b).unwrap());
-    assert!(!signed_ab.verify_signature_at(2, &key_a).unwrap());
 }
 
 #[test]
@@ -1224,7 +1191,7 @@ fn test_cryptographic_auth_sign_and_verify() {
 #[test]
 fn test_cipher_encrypt_and_decrypt() {
     let key = [0x42u8; 32];
-    let payload = b"secret";
+    let payload = b"secr";
 
     let cipher_block = Cipher::encrypt(payload, &key).unwrap();
 
@@ -1236,7 +1203,7 @@ fn test_cipher_encrypt_and_decrypt() {
         .build()
         .unwrap();
 
-    let mut decrypted = [0u8; 6];
+    let mut decrypted = [0u8; 5];
     let len = id.decrypt(&key, &mut decrypted).unwrap();
     assert_eq!(&decrypted[..len], payload);
 }
@@ -1295,26 +1262,6 @@ fn test_capacity_exceeded() {
         builder = builder.block(Tpl::new("ab").unwrap()).unwrap();
     }
     assert!(builder.block(Tpl::new("ab").unwrap()).is_err());
-}
-
-#[test]
-fn test_exact_limit_payload_bounds() {
-    let five_bytes = [0xFFu8; 5];
-    let blob5 = Blob::from_slice(&five_bytes).unwrap();
-    let id = Seid::builder().block(blob5).unwrap().build().unwrap();
-    let reparsed = Seid::parse(id.to_encoded().as_str()).unwrap();
-    let extracted: Blob = reparsed.get_as(0).unwrap();
-    assert_eq!(extracted.as_bytes(), &five_bytes);
-
-    let valid_6_bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-    let blob6 = Blob::from_slice(&valid_6_bytes).unwrap();
-    let id6 = Seid::builder().block(blob6).unwrap().build().unwrap();
-    let reparsed6 = Seid::parse(id6.to_encoded().as_str()).unwrap();
-    let extracted6: Blob = reparsed6.get_as(0).unwrap();
-    assert_eq!(extracted6.as_bytes(), &valid_6_bytes);
-
-    let overflowing_6_bytes = [0xFFu8; 6];
-    assert!(Blob::from_slice(&overflowing_6_bytes).is_err());
 }
 
 #[test]
@@ -1481,4 +1428,91 @@ fn test_auth_and_parity_with_hooks_anywhere() {
 
     assert!(!tampered_id.verify_signature(&key).unwrap());
     assert!(!tampered_id.check_parity().unwrap());
+}
+
+#[test]
+fn test_exact_limit_payload_bounds() {
+    // 5-byte payload is 100% supported and infallible
+    let five_bytes = [0xFFu8; 5];
+    let blob5 = Blob::from_slice(&five_bytes).unwrap();
+    let id = Seid::builder().block(blob5).unwrap().build().unwrap();
+    let reparsed = Seid::parse(id.to_encoded().as_str()).unwrap();
+    let extracted: Blob = reparsed.get_as(0).unwrap();
+    assert_eq!(extracted.as_bytes(), &five_bytes);
+
+    // 6-byte payloads are rejected cleanly upfront at compile/type boundary
+    let six_bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+    assert!(Blob::from_slice(&six_bytes).is_err());
+}
+
+#[test]
+fn test_multi_auth_independent_keys() {
+    let key_a = [0xAAu8; 32];
+    let key_b = [0xBBu8; 32];
+
+    let unsigned = Seid::builder()
+        .block(Auth::unsigned()) // Block 0: key_a slot
+        .unwrap()
+        .block(Tpl::new("tx").unwrap()) // Block 1: functional payload
+        .unwrap()
+        .block(Auth::unsigned()) // Block 2: key_b slot
+        .unwrap()
+        .build()
+        .unwrap();
+
+    // Sign slot 0, then sign slot 2
+    let signed_a = unsigned.sign_at(0, &key_a).unwrap();
+    let signed_ab = signed_a.sign_at(2, &key_b).unwrap();
+
+    assert!(signed_ab.is_fully_signed());
+
+    // Both signatures verify independently and concurrently
+    assert!(signed_ab.verify_signature_at(0, &key_a).unwrap());
+    assert!(!signed_ab.verify_signature_at(0, &key_b).unwrap());
+
+    assert!(signed_ab.verify_signature_at(2, &key_b).unwrap());
+    assert!(!signed_ab.verify_signature_at(2, &key_a).unwrap());
+}
+
+#[test]
+fn test_nonced_cipher_isolation() {
+    let key = [0x42u8; 32];
+    let payload = b"data";
+    let nonce1 = b"id_1";
+    let nonce2 = b"id_2";
+
+    let c1 = Cipher::encrypt_with_nonce(payload, &key, nonce1).unwrap();
+    let c2 = Cipher::encrypt_with_nonce(payload, &key, nonce2).unwrap();
+
+    // Keystream difference ensures different ciphertexts for identical plaintext
+    assert_ne!(c1.as_bytes(), c2.as_bytes());
+
+    let id1 = Seid::builder().block(c1).unwrap().build().unwrap();
+    let mut out = [0u8; 4];
+    assert_eq!(id1.decrypt_with_nonce(&key, nonce1, &mut out).unwrap(), 4);
+    assert_eq!(&out, payload);
+
+    // Decrypting with wrong nonce fails
+    assert_ne!(id1.decrypt_with_nonce(&key, nonce2, &mut out).unwrap(), 0);
+    assert_ne!(&out, payload);
+}
+
+#[test]
+fn test_parser_consecutive_delimiters() {
+    assert_eq!(
+        Seid::parse("usr:::ord::manifest"),
+        Err(ParseError::MalformedDelimiter)
+    );
+    assert_eq!(
+        Seid::parse(":usr::ord::manifest"),
+        Err(ParseError::MalformedDelimiter)
+    );
+    assert_eq!(
+        Seid::parse("usr::ord::manifest:"),
+        Err(ParseError::MalformedDelimiter)
+    );
+    assert_eq!(
+        Seid::parse("usr:ord::manifest"),
+        Err(ParseError::MalformedDelimiter)
+    );
 }

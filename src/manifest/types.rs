@@ -12,17 +12,14 @@ pub const MIN_BLOCK_LEN: usize = 2;
 pub const MAX_BLOCK_LEN: usize = 8;
 
 /// Maximum raw binary payload capacity per single block in bytes.
-pub const MAX_BLOCK_BYTES: usize = 6;
+/// Clamped strictly to 5 bytes ($2^{40} - 1 = 1,099,511,627,775 < 62^7$) to guarantee
+/// 100% infallible encoding within Base62 block limits.
+pub const MAX_BLOCK_BYTES: usize = 5;
 
 /// Reserved escape tag representing extended type systems in future specifications.
 pub const ESCAPE_TAG: u8 = 15;
 
 /// 4-bit discriminator defining the semantic capability of a block in the manifest bitfield.
-///
-/// # Namespace Layout
-/// - `0..=7`: Core standard block types defined by the SEID specification.
-/// - `8..=14`: Dedicated custom block space reserved for external crates and applications.
-/// - `15`: Reserved escape tag.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BlockType {
     /// Type 0: Static template text (hierarchy & domain).
@@ -48,7 +45,6 @@ pub enum BlockType {
 }
 
 impl BlockType {
-    /// Converts a raw 4-bit nibble into its corresponding [`BlockType`].
     #[inline]
     pub const fn from_u8(val: u8) -> Self {
         match val & 0x0F {
@@ -66,7 +62,6 @@ impl BlockType {
         }
     }
 
-    /// Returns the 4-bit representation as a primitive `u8`.
     #[inline]
     pub const fn as_u8(self) -> u8 {
         match self {
@@ -86,7 +81,6 @@ impl BlockType {
         }
     }
 
-    /// Returns `true` if this block belongs to the standard specification (types `0..=7`).
     #[inline]
     pub const fn is_standard(self) -> bool {
         matches!(
@@ -102,7 +96,6 @@ impl BlockType {
         )
     }
 
-    /// Returns `true` if this block belongs to the third-party custom namespace (types `8..=14`).
     #[inline]
     pub const fn is_custom(self) -> bool {
         matches!(self, Self::Custom(_))

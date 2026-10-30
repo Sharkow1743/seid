@@ -1,13 +1,11 @@
 [package]
 name = "seid"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["Sharkow"]
 description = ""
 license = "GPL-3.0-or-later"
 readme = "README.md"
-keywords = ["id", "uuid", "base62", "no_std", "wasm"]
-categories = ["data-structures", "no-std", "cryptography", "web-programming"]
 
 [features]
 default = ["std", "alloc", "sys-clock", "sys-rand"]

@@ -104,7 +104,16 @@ impl Manifest {
         }
 
         let val = base62::decode_u64(raw).map_err(ManifestError::Base62)?;
-        Self::from_u64(val)
+        let manifest = Self::from_u64(val)?;
+
+        // Canonical encoding verification: reject non-canonical representations
+        let mut check_buf = [0u8; MAX_BLOCK_LEN];
+        let written = manifest.encode_into(&mut check_buf)?;
+        if &check_buf[..written] != raw.as_bytes() {
+            return Err(ManifestError::ExtraneousBits);
+        }
+
+        Ok(manifest)
     }
 
     pub fn encoded_len(&self) -> usize {

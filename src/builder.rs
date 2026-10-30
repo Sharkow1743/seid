@@ -18,10 +18,11 @@ pub type IdBuilder = SeidBuilder;
 impl SeidBuilder {
     #[inline]
     pub const fn new() -> Self {
+        let valid_placeholder = unsafe {
+            InlineStr::from_raw_parts([b'0'; MAX_BLOCK_LEN], crate::manifest::MIN_BLOCK_LEN as u8)
+        };
         Self {
-            blocks: [RawBlock::new(BlockType::TplText, unsafe {
-                InlineStr::from_raw_parts([0; MAX_BLOCK_LEN], 0)
-            }); MAX_BLOCKS],
+            blocks: [RawBlock::new(BlockType::TplText, valid_placeholder); MAX_BLOCKS],
             hooks: [None; MAX_BLOCKS],
             count: 0,
         }

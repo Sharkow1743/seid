@@ -318,7 +318,16 @@ impl Seid {
     }
 
     pub fn decrypt(&self, key: &[u8; 32], out: &mut [u8]) -> Result<usize, CryptoError> {
-        crate::block::crypto::decrypt_blocks(self.blocks(), key, out)
+        self.decrypt_with_nonce(key, &[], out)
+    }
+
+    pub fn decrypt_with_nonce(
+        &self,
+        key: &[u8; 32],
+        nonce: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, CryptoError> {
+        crate::block::crypto::decrypt_blocks_with_nonce(self.blocks(), key, nonce, out)
     }
 
     /// Returns the primary timestamp:
