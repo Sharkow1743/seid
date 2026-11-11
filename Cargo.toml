@@ -1,17 +1,15 @@
 [package]
 name = "seid"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Sharkow"]
-description = "Stack-allocated, self-describing Base62 identifiers with a trailing capability manifest"
+description = "A SEgmented ID system"
 license = "GPL-3.0-or-later"
 readme = "README.md"
 repository = "https://github.com/Sharkow1743/seid"
 homepage = "https://github.com/Sharkow1743/seid"
 documentation = "https://docs.rs/seid"
-keywords = ["id", "identifier", "base62", "no-std", "ulid"]
-categories = ["data-structures", "encoding", "no-std"]
 exclude = ["target/"]
 
 [features]
