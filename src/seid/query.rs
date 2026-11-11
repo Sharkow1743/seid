@@ -3,26 +3,22 @@
 use super::Seid;
 use crate::block::time::{
     DAYS_PER_YEAR_MAX, FRACTION_BASE, SECS_PER_CANONICAL_YEAR, SECS_PER_DAY, YEAR_BASE,
-    YEAR_MODULUS_TIER, doy_to_ymd,
+    YEAR_MODULUS_TIER, doy_to_ymd, is_leap_year,
 };
 use crate::block::{BlockType, DateTime, Time, TimePrecision};
 
 impl Seid {
-    /// Primary numerical timestamp query combining available time blocks.
+    /// Nanoseconds since `2000-01-01T00:00:00` reconstructed from chained `Time` blocks.
+    ///
+    /// Uses the same packing as [`Self::datetime`]: block 0 is civil seconds within the
+    /// year-modulus tier, and each following block contributes a 0..999 fraction part
+    /// (ms, µs, ns, …) plus additional year-range bits.
+    ///
+    /// Precision finer than nanoseconds is truncated. Returns `None` when no `Time` block
+    /// is present.
     pub fn timestamp(&self) -> Option<u64> {
-        let mut time_iter = self.blocks().iter().filter_map(|b| {
-            if b.kind() == BlockType::Time {
-                b.decode::<Time>().ok().map(|t| t.0)
-            } else {
-                None
-            }
-        });
-
-        let coarse = time_iter.next()?;
-        match time_iter.next() {
-            Some(fine) => Some(coarse.saturating_mul(1_000_000_000).saturating_add(fine)),
-            None => Some(coarse),
-        }
+        let dt = self.datetime()?;
+        Some(datetime_to_epoch_nanos(&dt))
     }
 
     /// Reconstitutes structured civil datetime across any number of chained `Time` blocks.
@@ -86,4 +82,23 @@ impl Seid {
             precision: TimePrecision::from_instance(count),
         })
     }
+}
+
+fn datetime_to_epoch_nanos(dt: &DateTime) -> u64 {
+    let mut days = 0u64;
+    let mut y = YEAR_BASE;
+    while y < dt.year {
+        days = days.saturating_add(if is_leap_year(y) { 366 } else { 365 });
+        y += 1;
+    }
+    days = days.saturating_add((dt.day_of_year as u64).saturating_sub(1));
+
+    let secs = days
+        .saturating_mul(SECS_PER_DAY)
+        .saturating_add(dt.hour as u64 * 3600)
+        .saturating_add(dt.minute as u64 * 60)
+        .saturating_add(dt.second as u64);
+
+    secs.saturating_mul(1_000_000_000)
+        .saturating_add(dt.nanosecond() as u64)
 }

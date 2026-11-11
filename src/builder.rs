@@ -1,6 +1,9 @@
 //! Fully block-agnostic identifier builder with build-time hooks.
 
-use crate::block::{Block, Hook, InlineStr, Inst, MAX_BLOCK_LEN, MAX_BLOCKS, Parity, Rand, RawBlock, Tpl};
+use crate::block::crypto::auth_finalize_hook;
+use crate::block::{
+    Auth, Block, Hook, InlineStr, Inst, MAX_BLOCK_LEN, MAX_BLOCKS, Parity, Rand, RawBlock, Tpl,
+};
 use crate::error::{BlockError, BuilderError};
 use crate::manifest::BlockType;
 use crate::seid::Seid;
@@ -88,6 +91,30 @@ impl SeidBuilder {
     /// Appends an auto-computing parity checksum block.
     pub fn parity(self) -> Result<Self, BuilderError> {
         self.block(Parity::auto())
+    }
+
+    /// Appends an Auth placeholder that seals over the full identifier during `build()`.
+    ///
+    /// The key is kept only in the builder hook, never on the [`Auth`] block itself.
+    pub fn auth(mut self, key: [u8; 32]) -> Result<Self, BuilderError> {
+        if self.count >= MAX_BLOCKS {
+            return Err(BuilderError::CapacityExceeded(MAX_BLOCKS));
+        }
+
+        let b = Auth::unsigned();
+        let mut buf = [0u8; MAX_BLOCK_LEN];
+        let written = b.encode(&mut buf)?;
+        let s = core::str::from_utf8(&buf[..written])
+            .map_err(|_| BuilderError::Block(BlockError::InvalidBase62Char(0)))?;
+        let token = InlineStr::try_new(s)?;
+
+        self.blocks[self.count] = RawBlock::new(Auth::TYPE, token);
+        self.hooks[self.count] = Some(Hook {
+            func: auth_finalize_hook,
+            state: key,
+        });
+        self.count += 1;
+        Ok(self)
     }
 
     /// Appends a new timestamp block automatically configured for the next precision tier

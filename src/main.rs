@@ -411,7 +411,7 @@ fn print_detailed_id(id: &Seid, raw_input: &str) {
                     "  Block [{}]:      len: {} bytes, signed: {}, tag: 0x{}",
                     idx,
                     auth.len,
-                    auth.is_signed,
+                    !auth.is_placeholder(),
                     hex_encode(auth.as_bytes())
                 );
             }
@@ -571,7 +571,7 @@ fn format_block_details(block: &RawBlock, time_instance: &mut usize) -> String {
                 format!(
                     "tag: 0x{} (signed: {})",
                     hex_encode(auth.as_bytes()),
-                    auth.is_signed
+                    !auth.is_placeholder()
                 )
             } else {
                 "invalid auth block".to_string()

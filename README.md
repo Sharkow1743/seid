@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .time_now()?          // Sortable timestamp
         .rand_fast()?         // Nonce entropy
         .parity()?            // XXH3 error-detection checksum
+        // .auth(key)?        // optional BLAKE3 envelope seal (key never stored on Auth)
         .build()?;
 
     // Format directly (zero heap allocation via Display)

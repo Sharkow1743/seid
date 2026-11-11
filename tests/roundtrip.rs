@@ -85,7 +85,7 @@ fn test_cryptographic_auth_sign_and_verify() {
         .unwrap()
         .block(Inst::new("prod").unwrap())
         .unwrap()
-        .block_with(|blocks| Ok(Auth::sign(blocks, &secret_key)))
+        .auth(secret_key)
         .unwrap()
         .build()
         .unwrap();
@@ -321,13 +321,13 @@ fn test_auth_and_parity_with_hooks_anywhere() {
     let key = [0x99u8; 32];
 
     let id = Seid::builder()
-        .block(Auth::with_key(key))
+        .auth(key)
         .unwrap()
-        .block(Tpl::new("orders").unwrap())
+        .template("orders")
         .unwrap()
-        .block(Parity::auto())
+        .parity()
         .unwrap()
-        .block(Inst::new("eu1").unwrap())
+        .instance("eu1")
         .unwrap()
         .build()
         .unwrap();

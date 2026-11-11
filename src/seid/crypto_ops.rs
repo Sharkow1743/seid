@@ -52,7 +52,7 @@ impl Seid {
         }
 
         let a: Auth = blocks[auth_idx].decode()?;
-        if !a.is_signed {
+        if a.is_placeholder() {
             return Err(CryptoError::UnsignedAuthBlock(auth_idx));
         }
 
@@ -88,7 +88,7 @@ impl Seid {
         for block in self.blocks() {
             if block.kind == BlockType::Auth {
                 if let Ok(a) = block.decode::<Auth>() {
-                    if !a.is_signed {
+                    if a.is_placeholder() {
                         return false;
                     }
                 }

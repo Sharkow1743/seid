@@ -1,4 +1,4 @@
-use seid::block::{Auth, Parity, Tpl};
+use seid::block::Tpl;
 use seid::error::BuilderError;
 use seid::Seid;
 
@@ -72,11 +72,11 @@ fn test_builder_hook_ordering_parity_before_auth() {
     // Place Parity BEFORE Auth to verify two-pass build resolution:
     // Pass 1 seals Auth, Pass 2 computes Parity over finalized Auth
     let id = Seid::builder()
-        .block(Parity::auto()) // Index 0: Parity
+        .parity() // Index 0: Parity
         .unwrap()
-        .block(Auth::with_key(key)) // Index 1: Auth
+        .auth(key) // Index 1: Auth
         .unwrap()
-        .block(Tpl::new("data").unwrap()) // Index 2: Tpl
+        .template("data") // Index 2: Tpl
         .unwrap()
         .build()
         .unwrap();

@@ -1,7 +1,7 @@
 //! Cryptographic signature authentication and stream cipher payload operations using BLAKE3.
 
 use crate::base62;
-use crate::block::{Block, BlockType, Hook, InlineStr, MAX_BLOCK_BYTES, MAX_BLOCK_LEN, RawBlock};
+use crate::block::{Block, BlockType, InlineStr, MAX_BLOCK_BYTES, MAX_BLOCK_LEN, RawBlock};
 use crate::error::{BlockError, BufferError, BuilderError, CryptoError};
 
 /// Default authenticating MAC tag length in bytes.
@@ -20,7 +20,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-fn auth_finalize_hook(
+pub(crate) fn auth_finalize_hook(
     state: &[u8; 32],
     blocks: &[RawBlock],
     my_idx: usize,
@@ -33,8 +33,10 @@ fn auth_finalize_hook(
     InlineStr::try_new(s).map_err(BuilderError::Block)
 }
 
-/// Computes BLAKE3 envelope authentication over functional payload blocks and the manifest.
+/// Computes BLAKE3 envelope authentication over functional payload blocks.
+///
 /// Excludes all Auth blocks (to allow multi-signing) and Parity blocks.
+/// The signature covers the full identifier layout at `auth_index`.
 pub fn create_blake3_envelope_auth(
     blocks: &[RawBlock],
     key: &[u8; 32],
@@ -65,8 +67,6 @@ pub fn create_blake3_envelope_auth(
     Ok(Auth {
         bytes,
         len: clamped as u8,
-        is_signed: true,
-        key: None,
     })
 }
 
@@ -76,41 +76,8 @@ pub fn verify_blake3_envelope_auth(
     key: &[u8; 32],
     auth_index: usize,
 ) -> Result<bool, CryptoError> {
-    let mut hasher = blake3::Hasher::new_keyed(key);
-    hasher.update(b"seid::envelope::auth::v2");
-    hasher.update(&(auth_index as u64).to_le_bytes());
-
-    for (i, block) in blocks.iter().enumerate() {
-        if block.kind != BlockType::Auth && block.kind != BlockType::Parity {
-            hasher.update(&(i as u64).to_le_bytes());
-            hasher.update(&[block.kind.as_u8()]);
-            hasher.update(block.as_bytes());
-            hasher.update(b"::");
-        }
-    }
-
-    let mut output = [0u8; 32];
-    let mut xof = hasher.finalize_xof();
-    xof.fill(&mut output);
-
-    let expected = &output[..tag.len()];
-    Ok(constant_time_eq(tag, expected))
-}
-
-pub fn create_blake3_auth(
-    preceding_blocks: &[RawBlock],
-    key: &[u8; 32],
-    tag_len: usize,
-) -> Result<Auth, CryptoError> {
-    create_blake3_envelope_auth(preceding_blocks, key, preceding_blocks.len(), tag_len)
-}
-
-pub fn verify_blake3_auth(
-    preceding_blocks: &[RawBlock],
-    tag: &[u8],
-    key: &[u8; 32],
-) -> Result<bool, CryptoError> {
-    verify_blake3_envelope_auth(preceding_blocks, tag, key, preceding_blocks.len())
+    let expected = create_blake3_envelope_auth(blocks, key, auth_index, tag.len())?;
+    Ok(constant_time_eq(tag, expected.as_bytes()))
 }
 
 /// Decrypts sequential cipher blocks with an optional nonce to prevent keystream reuse.
@@ -176,56 +143,32 @@ pub fn decrypt_blocks(
     decrypt_blocks_with_nonce(blocks, key, &[], out)
 }
 
-/// Type 5: Cryptographic Authenticator MAC tag block.
+/// Type 5: Cryptographic authenticator MAC tag block.
+///
+/// Does not store signing keys. Use [`SeidBuilder::auth`](crate::SeidBuilder::auth) to
+/// seal during build, or [`Seid::sign_at`](crate::Seid::sign_at) afterward.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Auth {
     pub bytes: [u8; MAX_BLOCK_BYTES],
     pub len: u8,
-    pub is_signed: bool,
-    pub key: Option<[u8; 32]>,
 }
 
 impl Auth {
+    /// Placeholder tag filled with zeros; intended for later sealing via builder or `sign_at`.
     #[inline]
     pub fn unsigned() -> Self {
         Self {
             bytes: [0u8; MAX_BLOCK_BYTES],
             len: DEFAULT_AUTH_TAG_LEN as u8,
-            is_signed: false,
-            key: None,
         }
     }
 
+    /// True when this tag is still the all-zero placeholder (not yet sealed).
+    ///
+    /// A real MAC is all-zero with probability ~2^(-40) at the default tag length.
     #[inline]
-    pub fn with_key(key: [u8; 32]) -> Self {
-        Self {
-            bytes: [0u8; MAX_BLOCK_BYTES],
-            len: DEFAULT_AUTH_TAG_LEN as u8,
-            is_signed: false,
-            key: Some(key),
-        }
-    }
-
-    #[inline]
-    pub fn sign(preceding_blocks: &[RawBlock], key: &[u8; 32]) -> Self {
-        create_blake3_auth(preceding_blocks, key, DEFAULT_AUTH_TAG_LEN).unwrap()
-    }
-
-    #[inline]
-    pub fn sign_with_len(
-        preceding_blocks: &[RawBlock],
-        key: &[u8; 32],
-        tag_len: usize,
-    ) -> Result<Self, CryptoError> {
-        create_blake3_auth(preceding_blocks, key, tag_len)
-    }
-
-    #[inline]
-    pub fn verify(&self, preceding_blocks: &[RawBlock], key: &[u8; 32]) -> bool {
-        if !self.is_signed {
-            return false;
-        }
-        verify_blake3_auth(preceding_blocks, self.as_bytes(), key).unwrap_or(false)
+    pub fn is_placeholder(&self) -> bool {
+        self.as_bytes().iter().all(|&b| b == 0)
     }
 
     #[inline]
@@ -246,20 +189,9 @@ impl Block for Auth {
     fn decode(raw: &str) -> Result<Self, BlockError> {
         let mut bytes = [0u8; MAX_BLOCK_BYTES];
         let len = base62::decode_bytes_into(raw, &mut bytes)?;
-        let is_signed = bytes[..len].iter().any(|&b| b != 0);
         Ok(Self {
             bytes,
             len: len as u8,
-            is_signed,
-            key: None,
-        })
-    }
-
-    #[inline]
-    fn build_hook(&self) -> Option<Hook> {
-        self.key.map(|k| Hook {
-            func: auth_finalize_hook,
-            state: k,
         })
     }
 }

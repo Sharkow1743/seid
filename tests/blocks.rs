@@ -37,7 +37,6 @@ fn test_inline_str_traits_and_boundaries() {
 
 #[test]
 fn test_time_dual_block_resolution() {
-    // 0 Time blocks
     let id0 = Seid::builder()
         .block(Tpl::new("usr").unwrap())
         .unwrap()
@@ -45,23 +44,27 @@ fn test_time_dual_block_resolution() {
         .unwrap();
     assert_eq!(id0.timestamp(), None);
 
-    // 1 Time block (coarse milliseconds)
+    // Instance 0 only: 2000-01-01 + 1 day + 1 second → epoch nanos
     let id1 = Seid::builder()
-        .block(Time::new(123456).unwrap())
+        .block(Time::from_datetime_instance0(2000, 2, 1).unwrap())
         .unwrap()
         .build()
         .unwrap();
-    assert_eq!(id1.timestamp(), Some(123456));
+    let ts1 = id1.timestamp().unwrap();
+    assert_eq!(ts1, 86_401_000_000_000);
+    let dt1 = id1.datetime().unwrap();
+    assert_eq!((dt1.year, dt1.day_of_year, dt1.second), (2000, 2, 1));
 
-    // 2 Time blocks: coarse * 1_000_000_000 + fine
+    // +1 ms via second Time block
     let id2 = Seid::builder()
-        .block(Time::new(5).unwrap())
+        .block(Time::from_datetime_instance0(2000, 2, 1).unwrap())
         .unwrap()
-        .block(Time::new(42).unwrap())
+        .block(Time::from_subsecond_tier(2000, 1, 1).unwrap())
         .unwrap()
         .build()
         .unwrap();
-    assert_eq!(id2.timestamp(), Some(5_000_000_042));
+    assert_eq!(id2.timestamp(), Some(86_401_001_000_000));
+    assert_eq!(id2.datetime().unwrap().millisecond(), 1);
 }
 
 #[test]
@@ -85,9 +88,9 @@ fn test_auth_parity_exclusion_invariance() {
     let id = Seid::builder()
         .block(Tpl::new("secure").unwrap())
         .unwrap()
-        .block(Auth::with_key(key))
+        .auth(key)
         .unwrap()
-        .block(Parity::auto())
+        .parity()
         .unwrap()
         .build()
         .unwrap();
