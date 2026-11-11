@@ -1,7 +1,7 @@
 //! Fully block-agnostic identifier builder with build-time hooks.
 
-use crate::block::{Block, Hook, InlineStr, MAX_BLOCK_LEN, MAX_BLOCKS, RawBlock};
-use crate::error::BuilderError;
+use crate::block::{Block, Hook, InlineStr, Inst, MAX_BLOCK_LEN, MAX_BLOCKS, Parity, Rand, RawBlock, Tpl};
+use crate::error::{BlockError, BuilderError};
 use crate::manifest::BlockType;
 use crate::seid::Seid;
 
@@ -52,13 +52,55 @@ impl SeidBuilder {
         let mut buf = [0u8; MAX_BLOCK_LEN];
         let written = b.encode(&mut buf)?;
         let s = core::str::from_utf8(&buf[..written])
-            .map_err(|_| BuilderError::Block(crate::error::BlockError::InvalidBase62Char(0)))?;
+            .map_err(|_| BuilderError::Block(BlockError::InvalidBase62Char(0)))?;
 
         let token = InlineStr::try_new(s)?;
         self.blocks[self.count] = RawBlock::new(B::TYPE, token);
         self.hooks[self.count] = b.build_hook();
         self.count += 1;
         Ok(self)
+    }
+
+    /// Appends a template text block (`Tpl`).
+    pub fn template(self, s: &str) -> Result<Self, BuilderError> {
+        self.block(Tpl::new(s)?)
+    }
+
+    /// Appends an instance text block (`Inst`).
+    pub fn instance(self, s: &str) -> Result<Self, BuilderError> {
+        self.block(Inst::new(s)?)
+    }
+
+    /// Appends a fast PRNG entropy block.
+    pub fn rand_fast(self) -> Result<Self, BuilderError> {
+        self.block(Rand::fast())
+    }
+
+    /// Appends an OS CSPRNG entropy block.
+    #[cfg(feature = "sys-rand")]
+    pub fn rand_sys(self) -> Result<Self, BuilderError> {
+        let r = Rand::sys().map_err(|_| {
+            BuilderError::Block(BlockError::Base62(crate::error::Base62Error::Overflow))
+        })?;
+        self.block(r)
+    }
+
+    /// Appends an auto-computing parity checksum block.
+    pub fn parity(self) -> Result<Self, BuilderError> {
+        self.block(Parity::auto())
+    }
+
+    /// Appends a new timestamp block automatically configured for the next precision tier
+    /// based on how many `Time` blocks have already been appended to this builder.
+    #[cfg(all(feature = "sys-clock", feature = "std"))]
+    pub fn time_now(self) -> Result<Self, BuilderError> {
+        let time_instance_count = self
+            .current_blocks()
+            .iter()
+            .filter(|b| b.kind() == BlockType::Time)
+            .count();
+        let time_block = crate::block::Time::now_instance(time_instance_count)?;
+        self.block(time_block)
     }
 
     /// Evaluates a block constructor closure with access to preceding blocks.
