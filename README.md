@@ -3,6 +3,9 @@
 [![Crates.io](https://img.shields.io/crates/v/seid.svg)](https://crates.io/crates/seid)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
+> [!WARNING]
+> Built with an AI, if not obvious
+
 A universal, stack-allocated, self-describing identifier system designed for distributed architectures.
 
 SEID uses `::` as its section delimiter, enforces strict Base62 alphanumeric purity (`[0-9A-Za-z]`), and packs undisruptive structural metadata into a compact trailing manifest block.
