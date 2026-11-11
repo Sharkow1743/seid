@@ -176,7 +176,7 @@ pub fn decrypt_blocks(
     decrypt_blocks_with_nonce(blocks, key, &[], out)
 }
 
-/// Type 4: Cryptographic Authenticator MAC tag block.
+/// Type 5: Cryptographic Authenticator MAC tag block.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Auth {
     pub bytes: [u8; MAX_BLOCK_BYTES],
@@ -264,7 +264,7 @@ impl Block for Auth {
     }
 }
 
-/// Type 6: Encrypted binary payload block.
+/// Type 7: Encrypted binary payload block.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Cipher {
     pub bytes: [u8; MAX_BLOCK_BYTES],

@@ -27,7 +27,7 @@ pub enum BlockError {
     InvalidLength(usize),
     #[error("invalid ASCII Base62 byte in block: {0:#04x}")]
     InvalidBase62Char(u8),
-    #[error("block binary payload too large: {0} bytes (max is 6 bytes / 218T numerical limit)")]
+    #[error("block binary payload too large: {0} bytes (max is 5 bytes)")]
     PayloadTooLarge(usize),
     #[error("block type mismatch: expected {expected}, actual {actual}")]
     TypeMismatch {

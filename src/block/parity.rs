@@ -45,7 +45,7 @@ pub fn compute_xxh3_checksum_with_seed(blocks: &[RawBlock], symbol_idx: usize) -
     hasher.digest() % (MAX_U64_BASE62_VAL + 1)
 }
 
-/// Type 3: Parity / error detection block.
+/// Type 4: Parity / error detection block.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Parity {
     pub value: u64,

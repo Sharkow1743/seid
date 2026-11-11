@@ -21,7 +21,7 @@ fn init_entropy() -> u64 {
         .unwrap_or(0);
 
     #[cfg(not(feature = "std"))]
-    let time_entropy = 0x517c_c1b7_2722_0a95;
+    let time_entropy: u64 = 0x517c_c1b7_2722_0a95;
 
     ptr_entropy
         ^ stack_entropy.rotate_left(21)
@@ -29,7 +29,7 @@ fn init_entropy() -> u64 {
         ^ 0x9e37_79b9_7f4a_7c15
 }
 
-/// Type 1: Random entropy block (up to 47.6 bits per block).
+/// Type 3: Random entropy block (up to 47.6 bits per block).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Rand(pub u64);
 

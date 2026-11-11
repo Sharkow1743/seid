@@ -4,7 +4,7 @@ use crate::base62;
 use crate::block::{Block, BlockType, MAX_BLOCK_BYTES};
 use crate::error::{BlockError, BufferError};
 
-/// Type 5: Raw arbitrary binary payload block (up to 6 bytes within numerical bounds).
+/// Type 6: Raw arbitrary binary payload block (up to 5 bytes within numerical bounds).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Blob {
     pub bytes: [u8; MAX_BLOCK_BYTES],

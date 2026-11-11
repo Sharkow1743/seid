@@ -49,7 +49,7 @@ impl core::ops::Deref for Tpl {
     }
 }
 
-/// Type 7: Static instance text block (region, cluster, tenant, shard).
+/// Type 1: Static instance text block (region, cluster, tenant, shard).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Inst(pub InlineStr);
 
